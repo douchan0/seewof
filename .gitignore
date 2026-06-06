@@ -55,6 +55,8 @@ agent/agent.json
 # ============================================
 *.log
 data/logs/
+dev-data/
+dev-server/
 logs/
 *.tmp
 *.bak

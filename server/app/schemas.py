@@ -137,9 +137,18 @@ class EventIn(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+class LogEntryIn(BaseModel):
+    """批量日志的每条: 来自 agent.logger.log_event 写入的 _RING 格式.
+    注意: 时间字段是 't' (与 log_event 一致), 不带 classroom (外层已有)."""
+    t: int
+    event: str
+    source: str = ""
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
 class LogBatchIn(BaseModel):
     classroom: str
-    items: list[EventIn]
+    items: list[LogEntryIn]
 
 
 class LogItem(BaseModel):

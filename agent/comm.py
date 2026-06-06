@@ -68,7 +68,7 @@ class ServerClient:
         headers = build_signed_request(self._cfg.psk.encode("utf-8"), body)
         try:
             r = self._session.get(
-                url, headers=headers,
+                url, params={"classroom": self._cid}, headers=headers,
                 timeout=self._cfg.request_timeout_sec,
             )
             after = int(time.time())

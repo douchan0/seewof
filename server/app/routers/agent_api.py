@@ -180,7 +180,7 @@ async def post_log_batch(
             classroom_id=payload.classroom,
             event=it.event,
             source=it.source,
-            agent_ts=datetime.utcfromtimestamp(it.agent_ts),
+            agent_ts=datetime.utcfromtimestamp(it.t),
             server_ts=datetime.utcnow(),
             detail_json=json.dumps(it.detail, ensure_ascii=False),
         )
