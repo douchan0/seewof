@@ -1,0 +1,36 @@
+{
+  "classroom_id": "ROOM-101",
+  "server": {
+    "base_url": "https://192.168.1.10:8443",
+    "psk": "REPLACE_WITH_48_BYTE_BASE64_PSK",
+    "verify_tls": false,
+    "ca_cert": "",
+    "heartbeat_interval_sec": 60,
+    "time_sync_interval_sec": 60,
+    "request_timeout_sec": 8
+  },
+  "usb": {
+    "serial_via": "wmi",
+    "teacher_key_filename": "teacher.key",
+    "public_key_path": "public.pem",
+    "bind_drive_letters": ["E", "F", "G", "H"]
+  },
+  "lock": {
+    "block_keyboard": true,
+    "block_mouse": true,
+    "block_touch": true,
+    "block_accessibility": true,
+    "usb_remove_grace_sec": 5,
+    "schedule_soft_warn_sec": 30,
+    "overlay_opacity": 0.55,
+    "overlay_message": "上课期间或插入教师 U 盘解锁"
+  },
+  "protection": {
+    "watchdog_interval_sec": 3,
+    "kill_self_grace_sec": 10,
+    "admin_password_hash": "",
+    "service_name": "SeewofAgent"
+  },
+  "log_dir": "logs",
+  "data_dir": "data"
+}

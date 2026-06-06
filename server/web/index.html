@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>希沃教室控制台</title>
+  <link rel="stylesheet" href="/assets/element-plus.css" />
+  <script src="/assets/vue.global.prod.js"></script>
+  <script src="/assets/element-plus.full.min.js"></script>
+  <script src="/assets/axios.min.js"></script>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+    .app-container { min-height: 100vh; }
+    .login-bg {
+      height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+    }
+    .login-card { width: 380px; padding: 32px; border-radius: 8px;
+                  background: #fff; box-shadow: 0 12px 48px rgba(0,0,0,.2); }
+    .header-bar { display: flex; align-items: center; padding: 0 24px; height: 56px;
+                  background: #001529; color: #fff; }
+    .header-bar .logo { font-size: 18px; font-weight: 600; flex: 1; }
+    .header-bar .user { color: #aaa; }
+    .page { padding: 24px; }
+    .state-tag-ok { color: #67c23a; }
+    .state-tag-bad { color: #f56c6c; }
+    .row-actions button { margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <div id="app" class="app-container">
+    <el-config-provider>
+      <!-- 登录页 -->
+      <div v-if="!token" class="login-bg">
+        <div class="login-card">
+          <h2 style="text-align:center; margin-top:0">希沃教室控制台</h2>
+          <el-form @submit.prevent="login">
+            <el-form-item label="账号">
+              <el-input v-model="loginForm.username" placeholder="用户名" />
+            </el-form-item>
+            <el-form-item label="密码">
+              <el-input v-model="loginForm.password" type="password" show-password
+                        placeholder="密码" @keyup.enter="login" />
+            </el-form-item>
+            <el-button type="primary" :loading="loginLoading" @click="login"
+                       style="width:100%">登录</el-button>
+          </el-form>
+        </div>
+      </div>
+
+      <!-- 主页 -->
+      <el-container v-else>
+        <el-header class="header-bar">
+          <div class="logo">希沃教室控制台</div>
+          <div class="user">
+            {{ me.display_name || me.username }}
+            <el-button text type="primary" @click="logout" style="color:#fff; margin-left:16px">退出</el-button>
+          </div>
+        </el-header>
+        <el-container>
+          <el-aside width="220px" style="background:#001529; min-height: calc(100vh - 56px)">
+            <el-menu :default-active="activeMenu" background-color="#001529"
+                     text-color="#aaa" active-text-color="#fff" @select="handleMenu">
+              <el-menu-item index="classrooms">教室设备</el-menu-item>
+              <el-menu-item index="schedules">时间表</el-menu-item>
+              <el-menu-item index="unlock">远程解锁</el-menu-item>
+              <el-menu-item index="usbs">U 盘授权</el-menu-item>
+              <el-menu-item index="logs">日志中心</el-menu-item>
+            </el-menu>
+          </el-aside>
+          <el-main class="page">
+
+            <!-- 教室列表 -->
+            <div v-if="activeMenu==='classrooms'">
+              <h2>教室设备
+                <el-button type="primary" @click="openClassroomDialog()" style="float:right">添加教室</el-button>
+              </h2>
+              <el-table :data="classrooms" stripe>
+                <el-table-column prop="id" label="ID" width="160" />
+                <el-table-column prop="name" label="名称" width="160" />
+                <el-table-column prop="ip" label="IP" width="140" />
+                <el-table-column prop="mac" label="MAC" width="180" />
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row }">
+                    <el-tag :type="row.online ? 'success' : 'info'">
+                      {{ row.online ? '在线' : '离线' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="锁定" width="100">
+                  <template #default="{ row }">
+                    <el-tag :type="row.locked ? 'danger' : 'success'">
+                      {{ row.locked ? '锁定中' : '已解锁' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="U盘" width="100">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.has_usb" type="warning">已插</el-tag>
+                    <span v-else>-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="时钟漂移" width="120">
+                  <template #default="{ row }">
+                    <span :class="Math.abs(row.time_drift_sec) > 60 ? 'state-tag-bad' : ''">
+                      {{ row.time_drift_sec }} s
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="最后心跳">
+                  <template #default="{ row }">
+                    {{ row.last_seen ? new Date(row.last_seen).toLocaleString() : '—' }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="220">
+                  <template #default="{ row }">
+                    <el-button size="small" @click="openUnlockDialog(row)">解锁</el-button>
+                    <el-button size="small" type="primary" @click="openScheduleDialog(row)">时段</el-button>
+                    <el-button size="small" type="danger" @click="removeClassroom(row)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <!-- 时间表 (绑定当前选中教室) -->
+            <div v-if="activeMenu==='schedules'">
+              <h2>时间表</h2>
+              <el-select v-model="scheduleClassroom" placeholder="选择教室"
+                         @change="loadSchedules" style="margin-bottom:16px; width:240px">
+                <el-option v-for="c in classrooms" :key="c.id" :label="c.name" :value="c.id" />
+              </el-select>
+
+              <el-card v-if="scheduleClassroom">
+                <h3>当前时间表</h3>
+                <el-table :data="scheduleSlots" border>
+                  <el-table-column label="星期">
+                    <template #default="{ row }">
+                      <el-tag v-for="w in row.weekdays" :key="w" size="small" style="margin-right:4px">
+                        {{ weekdayName(w) }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="开始">
+                    <template #default="{ row }">{{ formatMin(row.start_min) }}</template>
+                  </el-table-column>
+                  <el-table-column label="结束">
+                    <template #default="{ row }">{{ formatMin(row.end_min) }}</template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="100">
+                    <template #default="{ $index }">
+                      <el-button size="small" type="danger" @click="scheduleSlots.splice($index,1)">删除</el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+
+                <el-divider />
+                <h4>添加时段</h4>
+                <el-form :inline="true">
+                  <el-form-item label="星期">
+                    <el-select v-model="newSlot.weekdays" multiple style="width:240px">
+                      <el-option v-for="i in 7" :key="i-1" :label="weekdayName(i-1)" :value="i-1" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="开始">
+                    <el-time-picker v-model="newSlot.startTime" format="HH:mm" value-format="HH:mm" />
+                  </el-form-item>
+                  <el-form-item label="结束">
+                    <el-time-picker v-model="newSlot.endTime" format="HH:mm" value-format="HH:mm" />
+                  </el-form-item>
+                  <el-form-item>
+                    <el-button @click="addSlot">添加</el-button>
+                    <el-button type="primary" @click="saveSchedule">保存</el-button>
+                  </el-form-item>
+                </el-form>
+              </el-card>
+            </div>
+
+            <!-- 远程解锁 -->
+            <div v-if="activeMenu==='unlock'">
+              <h2>远程解锁</h2>
+              <el-form :inline="true">
+                <el-form-item label="教室">
+                  <el-select v-model="unlockClassroom" placeholder="选择" style="width:200px">
+                    <el-option v-for="c in classrooms" :key="c.id" :label="c.name" :value="c.id" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="时长(分钟)">
+                  <el-input-number v-model="unlockDuration" :min="1" :max="1440" />
+                </el-form-item>
+                <el-form-item label="原因">
+                  <el-input v-model="unlockReason" style="width:200px" />
+                </el-form-item>
+                <el-form-item>
+                  <el-button type="primary" :disabled="!unlockClassroom" @click="issueUnlock">下发解锁</el-button>
+                </el-form-item>
+              </el-form>
+
+              <h3>活动中的解锁</h3>
+              <el-table :data="activeUnlocks">
+                <el-table-column prop="classroom_id" label="教室" />
+                <el-table-column prop="issued_by" label="签发者" />
+                <el-table-column prop="duration_sec" label="时长(秒)" width="120" />
+                <el-table-column label="到期时间">
+                  <template #default="{ row }">{{ new Date(row.expires_at).toLocaleString() }}</template>
+                </el-table-column>
+                <el-table-column prop="reason" label="原因" />
+                <el-table-column label="操作" width="120">
+                  <template #default="{ row }">
+                    <el-button size="small" type="danger" @click="revokeUnlock(row)">撤销</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <!-- U 盘授权 -->
+            <div v-if="activeMenu==='usbs'">
+              <h2>U 盘授权
+                <el-button type="primary" @click="openUsbDialog()" style="float:right">添加</el-button>
+              </h2>
+              <el-table :data="usbs">
+                <el-table-column prop="id" label="ID" width="80" />
+                <el-table-column prop="serial" label="序列号" />
+                <el-table-column prop="teacher_id" label="教师工号" />
+                <el-table-column prop="teacher_name" label="姓名" />
+                <el-table-column label="过期">
+                  <template #default="{ row }">
+                    {{ row.expires_at ? new Date(row.expires_at).toLocaleString() : '永不过期' }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="100">
+                  <template #default="{ row }">
+                    <el-tag :type="row.revoked ? 'danger' : 'success'">
+                      {{ row.revoked ? '已吊销' : '有效' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="220">
+                  <template #default="{ row }">
+                    <el-button size="small" @click="downloadKey(row)">下载 teacher.key</el-button>
+                    <el-button v-if="!row.revoked" size="small" type="warning" @click="revokeUsb(row)">吊销</el-button>
+                    <el-button size="small" type="danger" @click="removeUsb(row)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <!-- 日志 -->
+            <div v-if="activeMenu==='logs'">
+              <h2>日志中心</h2>
+              <el-form :inline="true" style="margin-bottom:16px">
+                <el-form-item label="教室">
+                  <el-select v-model="logFilter.classroom" clearable placeholder="全部" style="width:180px">
+                    <el-option v-for="c in classrooms" :key="c.id" :label="c.name" :value="c.id" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="事件">
+                  <el-select v-model="logFilter.event" clearable placeholder="全部" style="width:180px">
+                    <el-option v-for="e in logEvents" :key="e" :label="e" :value="e" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="关键字">
+                  <el-input v-model="logFilter.q" clearable style="width:200px" />
+                </el-form-item>
+                <el-form-item>
+                  <el-button type="primary" @click="loadLogs">查询</el-button>
+                </el-form-item>
+              </el-form>
+
+              <el-pagination v-model:current-page="logPage" :page-size="50"
+                             :total="logTotal" layout="total, prev, pager, next"
+                             @current-change="loadLogs" style="margin-bottom:12px" />
+
+              <el-table :data="logs">
+                <el-table-column prop="id" label="#" width="60" />
+                <el-table-column prop="classroom_id" label="教室" width="140" />
+                <el-table-column prop="event" label="事件" width="140" />
+                <el-table-column prop="source" label="来源" width="100" />
+                <el-table-column label="教室端时间" width="170">
+                  <template #default="{ row }">{{ new Date(row.agent_ts).toLocaleString() }}</template>
+                </el-table-column>
+                <el-table-column label="服务端时间" width="170">
+                  <template #default="{ row }">{{ new Date(row.server_ts).toLocaleString() }}</template>
+                </el-table-column>
+                <el-table-column label="详情">
+                  <template #default="{ row }">
+                    <pre style="margin:0; font-size:11px">{{ JSON.stringify(row.detail) }}</pre>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+          </el-main>
+        </el-container>
+      </el-container>
+    </el-config-provider>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

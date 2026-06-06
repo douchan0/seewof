@@ -1,0 +1,39 @@
+[Unit]
+Description=Seewof Control Server
+Documentation=https://github.com/yourorg/seewof
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seewof
+Group=seewof
+WorkingDirectory=/opt/seewof
+Environment="PATH=/opt/seewof/venv/bin:/usr/bin"
+Environment="SEEWOF_DB=/opt/seewof/data/seewof.db"
+Environment="SEEWOF_LOG_DIR=/opt/seewof/data/logs"
+# 生产环境必须修改 JWT_SECRET (建议: openssl rand -hex 32)
+# Environment="SEEWOF_JWT_SECRET=..."
+# Environment="SEEWOF_BOOTSTRAP_TOKEN=..."
+# CORS: 多个用逗号分隔; * 表示全部
+Environment="SEEWOF_CORS_ORIGINS=https://seewof.example.com"
+
+ExecStart=/opt/seewof/venv/bin/uvicorn server.app.main:app \
+  --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers
+
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+# 资源限制
+MemoryMax=512M
+CPUQuota=80%
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/seewof/data /opt/seewof/server/web
+
+[Install]
+WantedBy=multi-user.target
