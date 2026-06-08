@@ -399,6 +399,75 @@ def test_state(rep: Reporter, args: argparse.Namespace) -> None:
     s = evaluate_schedule(slots, now_epoch=int(today.timestamp()))
     rep.case("时段: 今天 0:00 边界", isinstance(s, Schedule), f"in_session={s.in_session}")
 
+    # -----------------------------------------------------------------
+    # 教学秩序第一: 网络/时间异常下, USB 仍要保证解锁
+    # (这是用户明确要求的产品原则, 写死在 state.decide() 注释里)
+    # -----------------------------------------------------------------
+    rep.header("  ↳ 教学秩序: 网络异常时 USB 通行证")
+
+    # 1) USB 验签通过 + 网络断了 (时段空, 远程空, 时间未同步) -> 仍 UNLOCKED
+    rep.case("USB 验签通过 + 时段空 + 远程空 -> UNLOCKED usb (核心)",
+             decide(ctx(has_usb=True, in_session=False, remote_until=0)).state
+             == LockState.UNLOCKED
+             and decide(ctx(has_usb=True, in_session=False, remote_until=0)).reason
+             == Reason.USB)
+
+    # 2) USB 验签通过 + 远程过期 -> 仍 UNLOCKED (USB 是通行证, 不看时间)
+    rep.case("USB 验签通过 + 远程过期 -> UNLOCKED usb",
+             decide(ctx(has_usb=True, remote_until=int(time.time()) - 100)).reason
+             == Reason.USB)
+
+    # 3) USB 验签通过 + 时段已结束 -> 仍 UNLOCKED
+    rep.case("USB 验签通过 + 时段结束 -> UNLOCKED usb",
+             decide(ctx(has_usb=True, in_session=False)).reason == Reason.USB)
+
+    # 4) USB 验签通过 + 时段结束 + 远程过期 -> 仍 UNLOCKED (极端场景)
+    rep.case("USB 验签通过 + 时段结束 + 远程过期 -> UNLOCKED usb (三重失效)",
+             decide(ctx(has_usb=True, in_session=False,
+                        remote_until=int(time.time()) - 100)).reason == Reason.USB)
+
+    # 5) 软提示在 USB 模式下不应该触发 (USB 验签了, 没"即将下课"概念)
+    rep.case("USB 模式下 soft_warn=False",
+             decide(ctx(has_usb=True)).soft_warn is False)
+
+    # 6) RemoteGrant 纯本地时间判断, 不依赖网络
+    rg_active = RemoteGrant(expires_at=int(time.time()) + 60)
+    rg_expired = RemoteGrant(expires_at=int(time.time()) - 1)
+    rg_zero = RemoteGrant(expires_at=0)
+    rep.case("RemoteGrant.active (网络断了也正确)",
+             rg_active.active is True
+             and rg_expired.active is False
+             and rg_zero.active is False)
+
+    # 7) 时段保留 (fail-resilient): evaluate_schedule 不依赖网络, 只看传入的 slots
+    # 模拟"网络断了但 _time_slots 还有旧值"
+    rep.case("时段评估: 网络断了 _time_slots 仍可用",
+             evaluate_schedule(slots, now_epoch=int(workday_9am.timestamp())).in_session
+             is True,
+             "评估器只看 slots, 不查网络")
+
+    # 8) main.py 启动顺序: 验证 _initial_decision 存在
+    main_src = (ROOT / "agent" / "main.py").read_text(encoding="utf-8")
+    rep.case("main.py 有 _initial_decision 同步首跑",
+             "_initial_decision" in main_src)
+    rep.case("main.py run() 不再无条件 protection.apply()",
+             # 旧 bug: run() 顶层调用 apply()
+             # 修复后: apply() 只在 _apply_decision(LOCKED) 里调用
+             main_src.count("self._protection.apply()") == 1
+             and "self._apply_decision" in main_src)
+    rep.case("main.py run() 不再无条件 touch.set_blocked(True)",
+             # 旧 bug: 启动时直接禁用触摸
+             "self._touch.set_blocked(True)" not in main_src.split("def run")[1].split("def _initial_decision")[0])
+
+    # 9) input_blocker 默认 _locked = False (避免开机瞬间误锁键盘)
+    ib_src = (ROOT / "agent" / "input_blocker.py").read_text(encoding="utf-8")
+    rep.case("InputBlocker 默认 _locked = False (教学秩序)",
+             "self._locked = False" in ib_src)
+
+    # 10) heartbeat_loop 不再清空 _time_slots
+    rep.case("heartbeat_loop 不再清空 _time_slots (fail-resilient)",
+             "_time_slots = []" not in main_src.split("def _heartbeat_loop")[1])
+
 
 # ===========================================================================
 # 3. USB 验签测试

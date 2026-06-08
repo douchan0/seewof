@@ -80,7 +80,12 @@ class Agent:
         self._running = True
         self._install_signal_handlers()
 
-        # 启动顺序很重要
+        # 启动顺序 (教学秩序第一原则):
+        # 1. overlay 子线程起来 (默认 hidden, 不显示)
+        # 2. blocker 钩子线程起来, 但 set_locked=False (不拦截)
+        # 3. USB 监听起来
+        # 4. 同步跑一次决策, 根据结果再 enable blocker / touch / protection
+        #    -> 避免开机瞬间 (1 秒空窗) 锁屏或禁用任务管理器
         try:
             self._overlay.start()
         except Exception as e:
@@ -89,12 +94,16 @@ class Agent:
             self._blocker.start()
         except OSError as e:
             self._log.error("input_blocker start failed: %s", e)
-        self._touch.set_blocked(True)
-        self._protection.apply()
+        # 默认 UNLOCKED: 钩子装着但不拦截, 等第一次 decision 决定
+        self._blocker.set_locked(False)
+        self._touch.set_blocked(False)
         self._usb.start()
 
         log_event(self._log, EventType.STARTUP.value,
                   detail={"pid": os.getpid()})
+
+        # 第一次决策同步执行, 避免 1 秒 LOCKED 空窗
+        self._initial_decision()
 
         # 启动协调线程
         threading.Thread(target=self._heartbeat_loop, name="Heartbeat", daemon=True).start()
@@ -135,18 +144,37 @@ class Agent:
         log_event(self._log, EventType.SHUTDOWN.value)
 
     # ---------------------------------------------------------- 协调
+    def _initial_decision(self) -> None:
+        """启动时同步跑一次决策, 避免 1 秒空窗内屏幕被误锁.
+
+        时段表可能还是空 (heartbeat 还没拉到), USB 也可能正在验证,
+        但 state.decide() 的 USB 优先级保证: 只要 USB 验签通过就立即解锁.
+        """
+        from .state import decide
+        d = decide(self._ctx)
+        self._state.update(self._ctx)
+        self._apply_decision(d, log_change=True)
+
     def _decision_loop(self) -> None:
-        """每秒根据上下文重新决策."""
+        """每秒根据上下文重新决策.
+
+        原则 (教学秩序第一):
+        - USB 优先: 只要 USB 验签通过, 任何情况下都解锁
+        - 时段是软信号: 网络断了不清空, 保留上次成功拉到的数据
+        - Grace period: U 盘拔出后 5 秒内不切换任何子系统, 避免接触不良误锁
+        """
+        from .state import decide
         while self._running:
             now = int(time.time())
-            # 1. 处理 U 盘拔出的延迟锁定
-            if self._ctx.has_valid_usb is False and self._usb_remove_deadline > 0:
-                if time.time() >= self._usb_remove_deadline:
-                    self._usb_remove_deadline = 0
-                    # 通知一次
-                    self._log.info("usb remove grace period elapsed")
 
-            # 2. 计算时段
+            # 1. 处理 U 盘拔出的延迟锁定
+            in_grace = (
+                self._ctx.has_valid_usb is False
+                and self._usb_remove_deadline > 0
+                and time.time() < self._usb_remove_deadline
+            )
+
+            # 2. 计算时段 (保留 _time_slots, 网络断了不强制清空)
             server_now = self._server.clock().now() or now
             self._ctx.schedule = evaluate_schedule(
                 self._time_slots, now_epoch=server_now,
@@ -157,43 +185,50 @@ class Agent:
                 self._ctx.remote.expires_at = self._pending_remote_until
                 self._ctx.remote.command_id = self._pending_remote_id
             # 4. 决策
-            from .state import decide
-            d = decide(self._ctx) if False else None  # see below
-            from .state import decide as _decide
-            d = _decide(self._ctx)
+            d = decide(self._ctx)
             _, changed = self._state.update(self._ctx)
 
-            # 5. 应用到子系统
-            if d.state.value == "unlocked":
-                self._blocker.set_locked(False)
-                self._touch.set_blocked(False)
-                if d.soft_warn:
-                    self._overlay.show_soft_warn()
-                else:
-                    self._overlay.show_unlock()
-            else:
-                # 锁定: 触发延迟 (U盘拔出) 还是立即
-                if self._ctx.has_valid_usb is False and \
-                   self._usb_remove_deadline > time.time() < float("inf") and \
-                   (self._ctx.schedule.in_session or self._ctx.remote.active):
-                    # U 盘刚拔出, 仍在时段或远程有效, 保持解锁
-                    self._blocker.set_locked(False)
-                else:
-                    self._blocker.set_locked(True)
-                    self._touch.set_blocked(True)
-                    self._overlay.show_lock()
+            # 5. 应用到子系统 (grace period 内跳过)
+            if not in_grace:
+                self._apply_decision(d, log_change=changed)
 
-            if changed:
-                ev = EventType.UNLOCK.value if d.state.value == "unlocked" else EventType.LOCK.value
-                log_event(
-                    self._log, ev,
-                    source=d.reason.value,
-                    detail={"soft_warn": d.soft_warn},
-                )
             time.sleep(1)
 
+    def _apply_decision(self, d, *, log_change: bool) -> None:
+        """把决策结果应用到 blocker / touch / overlay / protection."""
+        if d.state.value == "unlocked":
+            # USB 优先 / 时段内 / 远程授权: 解锁
+            self._blocker.set_locked(False)
+            self._touch.set_blocked(False)
+            self._protection.revert()  # 撤销注册表策略, 允许任务管理器
+            if d.soft_warn:
+                self._overlay.show_soft_warn()
+            else:
+                self._overlay.show_unlock()
+        else:
+            # LOCKED: 启用所有锁定
+            self._blocker.set_locked(True)
+            self._touch.set_blocked(True)
+            self._protection.apply()  # 禁用任务管理器等
+            self._overlay.show_lock()
+
+        if log_change:
+            ev = EventType.UNLOCK.value if d.state.value == "unlocked" else EventType.LOCK.value
+            log_event(
+                self._log, ev,
+                source=d.reason.value,
+                detail={"soft_warn": d.soft_warn},
+            )
+
     def _heartbeat_loop(self) -> None:
-        """每 N 秒: 时间同步 + 拉取最新配置/指令 + 报告状态."""
+        """每 N 秒: 时间同步 + 拉取最新配置/指令 + 报告状态.
+
+        时钟同步失败的策略 (教学秩序第一):
+        - 不再"3 次失败清空时段" (这会导致网络一抖就锁屏)
+        - 保留 _time_slots, 让 evaluate_schedule 用旧时段继续判断
+        - 时钟漂移过大时, 记录 WARNING 但不修改决策
+        - USB 是"通行证", 永远凌驾于时段之上
+        """
         next_sync = 0.0
         next_poll = 0.0
         while self._running:
@@ -201,12 +236,14 @@ class Agent:
             if now >= next_sync:
                 ok = self._server.sync_time()
                 if not ok:
-                    self._log.warning("time sync failed (failures=%d)",
-                                      self._server.clock().consecutive_failures)
-                # 时钟同步失败累计 3 次, 强制锁定
-                if self._server.clock().consecutive_failures >= 3:
-                    self._time_slots = []
-                    self._log.warning("clock sync failed 3x; force schedule disabled")
+                    self._log.warning(
+                        "time sync failed (failures=%d); "
+                        "保留旧时段, 不清空, USB 仍可解锁",
+                        self._server.clock().consecutive_failures,
+                    )
+                # 故意不修改 self._time_slots:
+                # 旧时段自然过期后 schedule 自动 in_session=False
+                # 突然清空会让学生"上着课屏幕突然锁了" -> 违反教学秩序
                 next_sync = now + self._cfg.server.time_sync_interval_sec
             if now >= next_poll:
                 self._poll_server()
@@ -249,8 +286,14 @@ class Agent:
         if ev.valid:
             self._ctx.has_valid_usb = True
             self._usb_remove_deadline = 0
+            log_event(self._log, EventType.USB_VERIFY_OK.value,
+                      source=UnlockSource.USB.value,
+                      detail={"drive": ev.drive,
+                              "teacher": ev.teacher_name,
+                              "teacher_id": ev.teacher_id})
         else:
-            # 非法 U 盘, 不解锁, 但也不立即切换状态 (避免给提示)
+            # 非法 U 盘: 不解锁, 也不立即切换状态 (避免给提示)
+            # 但必须写 USB_INSERT 事件, 否则审计日志缺记录
             log_event(self._log, EventType.USB_INSERT.value,
                       source=UnlockSource.USB.value,
                       detail={"drive": ev.drive, "valid": False,

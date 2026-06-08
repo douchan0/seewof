@@ -119,7 +119,10 @@ class InputBlocker:
         on_hotkey: Callable[[str], None] | None = None,
     ) -> None:
         self._cfg = cfg
-        self._locked = True
+        # 默认 UNLOCKED: 启动时钩子装着但不拦截.
+        # 等第一次 decision 跑完, 根据 state 调用 set_locked(True/False).
+        # (教学秩序第一: 避免开机瞬间 1 秒空窗内误锁键盘)
+        self._locked = False
         self._lock = threading.RLock()
         self._log = logging.getLogger("seewof")
         self._on_hotkey = on_hotkey
